@@ -41,29 +41,29 @@
 	ldrh  \ptr, [\regB], \val
 	.endm
 
-	.macro strh1 ptr, regB, val
-	uao_user_alternative 9997f, strh, sttrh, \ptr, \regB, \val
+	.macro strh1 reg, ptr, val
+	uao_user_alternative 9997f, strh, sttrh, \reg, \ptr, \val
 	.endm
 
 	.macro ldr1 ptr, regB, val
 	ldr \ptr, [\regB], \val
 	.endm
 
-	.macro str1 ptr, regB, val
-	uao_user_alternative 9997f, str, sttr, \ptr, \regB, \val
+	.macro str1 reg, ptr, val
+	uao_user_alternative 9997f, str, sttr, \reg, \ptr, \val
 	.endm
 
 	.macro ldp1 ptr, regB, regC, val
 	ldp \ptr, \regB, [\regC], \val
 	.endm
 
-	.macro stp1 ptr, regB, regC, val
-	uao_stp 9997f, \ptr, \regB, \regC, \val
+	.macro stp1 reg1, reg2, ptr, val
+	uao_stp 9997f, \reg1, \reg2, \ptr, \val
 	.endm
 
 end	.req	x5
 srcin	.req	x15
-ENTRY(__arch_copy_to_user)
+SYM_FUNC_START(__arch_copy_to_user)
 	uaccess_enable_not_uao x3, x4, x5
 	add	end, x0, x2
 	mov	srcin, x1
