@@ -56,7 +56,11 @@ static int msm_get_read_mem_size
 		}
 		for (i = 0; i < eeprom_map->memory_map_size; i++) {
 			if (eeprom_map->mem_settings[i].i2c_operation ==
-				MSM_CAM_READ) {
+				MSM_CAM_READ ||
+				eeprom_map->mem_settings[i].i2c_operation ==
+				MSM_CAM_READ_CONTINUOUS ||
+				eeprom_map->mem_settings[i].i2c_operation ==
+				MSM_CAM_READ_PAGE) {
 				size += eeprom_map->mem_settings[i].reg_data;
 			}
 		}
@@ -329,18 +333,7 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 	int rc =  0, i, j;
 	uint8_t *memptr;
 	struct msm_eeprom_mem_map_t *eeprom_map;
-#if 0
-	int ret = 0;
-	uint8_t *buffer;
-	mm_segment_t fs;
-	loff_t pos;
-	struct file *fp = NULL;
-	uint32_t addr = 0x1361;
-	uint32_t  checksum1 = 0x00;
-	uint32_t  checksum2 = 0x00;
-	uint16_t csp_config_addr = 0x8000;
-	uint16_t csp_reg_val;
-#endif
+	struct msm_camera_i2c_fn_t *i2c_func_tbl;
 
 	e_ctrl->cal_data.mapdata = NULL;
 	e_ctrl->cal_data.num_data = msm_get_read_mem_size(eeprom_map_array);
@@ -356,6 +349,7 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 		return -ENOMEM;
 
 	memptr = e_ctrl->cal_data.mapdata;
+	i2c_func_tbl = e_ctrl->i2c_client.i2c_func_tbl;
 	for (j = 0; j < eeprom_map_array->msm_size_of_max_mappings; j++) {
 		eeprom_map = &(eeprom_map_array->memory_map[j]);
 		if (e_ctrl->i2c_client.cci_client) {
@@ -366,9 +360,10 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 				eeprom_map->slave_addr >> 1;
 		}
 		CDBG("Slave Addr: 0x%X\n", eeprom_map->slave_addr);
-		CDBG("Memory map Size: %d",
-			eeprom_map->memory_map_size);
+		CDBG("Memory map Size: %d", eeprom_map->memory_map_size);
 		for (i = 0; i < eeprom_map->memory_map_size; i++) {
+			struct msm_camera_reg_settings_t mem_setting =
+					eeprom_map->mem_settings[i];
 			switch (eeprom_map->mem_settings[i].i2c_operation) {
 			case MSM_CAM_WRITE: {
 				e_ctrl->i2c_client.addr_type =
@@ -379,6 +374,24 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 					eeprom_map->mem_settings[i].reg_data,
 					eeprom_map->mem_settings[i].data_type);
 				msleep(eeprom_map->mem_settings[i].delay);
+				if (rc < 0) {
+					pr_err("%s: page write failed\n",
+						__func__);
+					goto clean_up;
+				}
+			}
+			break;
+			case MSM_CAM_WRITE_DELAYUSEC: {
+				e_ctrl->i2c_client.addr_type =
+					mem_setting.addr_type;
+				rc = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+					&(e_ctrl->i2c_client),
+					mem_setting.reg_addr,
+					mem_setting.reg_data,
+					mem_setting.data_type);
+
+				if (mem_setting.delay > 0)
+					udelay(mem_setting.delay);
 				if (rc < 0) {
 					pr_err("%s: page write failed\n",
 						__func__);
@@ -420,6 +433,67 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 				memptr += eeprom_map->mem_settings[i].reg_data;
 			}
 			break;
+			case MSM_CAM_READ_PAGE: {
+				int x = 0;
+				const int inc = 5;
+				const int nunit = 2;
+				const cnBatch = inc * nunit;
+				const cnLimit =
+					mem_setting.reg_data / cnBatch * inc;
+				const cnNotYet =
+					mem_setting.reg_data % cnBatch;
+
+				e_ctrl->i2c_client.addr_type =
+					mem_setting.addr_type;
+
+				for (x = 0; x < cnLimit; x += inc) {
+					rc = i2c_func_tbl->i2c_read_seq(
+						&(e_ctrl->i2c_client),
+						mem_setting.reg_addr+x,
+						memptr, cnBatch);
+
+					if (rc < 0) {
+						pr_err("%s: read failed\n",
+							__func__);
+						goto clean_up;
+					}
+					memptr += cnBatch;
+				}
+
+				if (cnNotYet > 0) {
+					rc = i2c_func_tbl->i2c_read_seq(
+						&(e_ctrl->i2c_client),
+						mem_setting.reg_addr+x,
+						memptr, cnNotYet);
+					if (rc < 0) {
+						pr_err("%s: read failed at final readout\n",
+							__func__);
+						goto clean_up;
+					}
+					memptr += cnNotYet;
+				}
+			}
+			break;
+			case MSM_CAM_READ_CONTINUOUS: {
+				int j = 0;
+
+				e_ctrl->i2c_client.addr_type =
+					mem_setting.addr_type;
+				for (j = 0; j < mem_setting.reg_data; j++) {
+					rc = i2c_func_tbl->i2c_read_seq(
+						&(e_ctrl->i2c_client),
+						mem_setting.reg_addr+j,
+						memptr, 1);
+					msleep(mem_setting.delay);
+					if (rc < 0) {
+						pr_err("%s: read failed\n",
+							__func__);
+						goto clean_up;
+					}
+					memptr++;
+				}
+			}
+			break;
 			default:
 				pr_err("%s: %d Invalid i2c operation LC:%d\n",
 					__func__, __LINE__, i);
@@ -430,102 +504,6 @@ static int eeprom_parse_memory_map(struct msm_eeprom_ctrl_t *e_ctrl,
 	memptr = e_ctrl->cal_data.mapdata;
 	for (i = 0; i < e_ctrl->cal_data.num_data; i++)
 		CDBG("memory_data[%d] = 0x%X\n", i, memptr[i]);
-
-#if 0
-	if((memptr[0x000C] == 0x002B) && (memptr[0x000D] == 0x003A))
-	{
-		fp = filp_open("/data/vendor/camera/rewrite_arcsoft_calibration_data.bin", O_RDONLY, 0777);
-		if (IS_ERR(fp))
-		{
-			pr_err("Brave open file fail,Not need rewrite! \n");
-			return rc;
-		}
-		CDBG("open rewrite_arcsoft_calibration_data.bin open file succeed,need rewrite! \n");
-		pos = 0;
-		buffer = memptr + 0x1361;
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		vfs_read(fp, buffer, 2048, &pos);
-		filp_open("/data/vendor/camera/flag.txt", O_CREAT, 0777),
-		filp_close(fp, NULL);
-		set_fs(fs);
-
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_read(
-		&e_ctrl->i2c_client, csp_config_addr,&csp_reg_val,
-		MSM_CAMERA_I2C_BYTE_DATA);
-		msleep(5);
-		CDBG("%s:  csp_reg_val %d\n", __func__,csp_reg_val);
-		if(memptr[0x01] == 0x01)
-			{
-			ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-					&e_ctrl->i2c_client, csp_config_addr,0x00,
-					MSM_CAMERA_I2C_BYTE_DATA);
-					pr_err("tong sunny", __func__);
-			}else if(memptr[0x01] == 0x07)
-				{
-				ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-						&e_ctrl->i2c_client, csp_config_addr,0x20,
-						MSM_CAMERA_I2C_BYTE_DATA);
-					pr_err("tong ofilm", __func__);
-				}
-		msleep(5);
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_read(
-			&e_ctrl->i2c_client, csp_config_addr,&csp_reg_val,
-			MSM_CAMERA_I2C_BYTE_DATA);
-		msleep(5);
-		CDBG("chb--3 %s:  csp_reg_val %d\n", __func__,csp_reg_val);
-
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(&e_ctrl->i2c_client, 0x1360,0x01,MSM_CAMERA_I2C_BYTE_DATA);
-		memptr[0x1360] = 0x01;
-		for(i = 0;i < 2048; i++){
-			msleep(5);
-			ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(&e_ctrl->i2c_client,addr,*(buffer+i),MSM_CAMERA_I2C_BYTE_DATA);
-			if(ret < 0){
-				pr_err("dualcamera crc data rewrite fail!");
-				return rc;
-			}
-			addr += 1;
-		}
-
-		for (j = 0x1361; j <= 0x1B60; j++){
-			checksum1 = checksum1 + memptr[j];
-		}
-		memptr[0x1B61] = checksum1%0xFF+1;
-		msleep(5);
-		CDBG("dualcamera crc data  sum1 = 0x%X ,checksum1 = 0x%X \n",checksum1,checksum1%0xFF+1);
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(&e_ctrl->i2c_client, 0x1B61,checksum1%0xFF+1,MSM_CAMERA_I2C_BYTE_DATA);
-		if(ret < 0){
-			pr_err("dualcamera crc data rewrite  checksum1 fail!");
-		}
-
-		for (j = 0; j <= 0x1F54; j++){
-			checksum2 = checksum2 + e_ctrl->cal_data.mapdata[j];
-		}
-		memptr[0x1F55] = checksum2%0xFF+1;
-		msleep(5);
-		CDBG("dualcamera crc data  sum2 = 0x%X ,checksum2 = 0x%X \n",checksum2,checksum2%0xFF+1);
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-				&(e_ctrl->i2c_client), 0x1F55,checksum2%0xFF+1, MSM_CAMERA_I2C_BYTE_DATA);
-		if(ret < 0){
-			pr_err("dualcamera crc data rewrite checksum2 fail!");
-		}
-		msleep(5);
-		if(memptr[0x01] == 0x01)
-		{
-		ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-				&e_ctrl->i2c_client, csp_config_addr,0x0E,
-				MSM_CAMERA_I2C_BYTE_DATA);
-				pr_err("tong sunny", __func__);
-		}else if(memptr[0x01] == 0x07)
-		{
-			ret = e_ctrl->i2c_client.i2c_func_tbl->i2c_write(
-					&e_ctrl->i2c_client, csp_config_addr,0x2E,
-					MSM_CAMERA_I2C_BYTE_DATA);
-				pr_err("tong ofilm", __func__);
-		}
-	}
-
-#endif
 	return rc;
 
 clean_up:
