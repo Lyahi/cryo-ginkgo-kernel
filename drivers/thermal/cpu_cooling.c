@@ -735,6 +735,26 @@ update_frequency:
 	return 0;
 }
 
+void cpu_limits_set_level(unsigned int cpu, unsigned int requested)
+{
+	struct cpufreq_cooling_device *cpufreq_cdev;
+	int i, target;
+
+	list_for_each_entry(cpufreq_cdev, &cpufreq_cdev_list, node) {
+		if (cpufreq_cdev->id == cpu) {
+			for (i = 0; i < cpufreq_cdev->max_level; i++) {
+				target = cpufreq_cdev->freq_table[i].frequency;
+				if (requested >= target && cpufreq_cdev->cdev) {
+					cpufreq_set_cur_state(cpufreq_cdev->cdev, i);
+					break;
+				}
+			}
+
+			break;
+		}
+	}
+}
+
 /**
  * cpufreq_get_requested_power() - get the current power
  * @cdev:	&thermal_cooling_device pointer
